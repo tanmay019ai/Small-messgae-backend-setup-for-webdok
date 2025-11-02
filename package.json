@@ -1,0 +1,27 @@
+{
+  "name": "small-messgae-backend-setup-for-webdok",
+  "version": "1.0.0",
+  "description": "Freelancing project mini (Shopify)",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tanmay019ai/Small-messgae-backend-setup-for-webdok.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module"
+,
+  "bugs": {
+    "url": "https://github.com/tanmay019ai/Small-messgae-backend-setup-for-webdok/issues"
+  },
+  "homepage": "https://github.com/tanmay019ai/Small-messgae-backend-setup-for-webdok#readme",
+  "dependencies": {
+    "dotenv": "^17.2.3",
+    "express": "^5.1.0",
+    "twilio": "^5.10.4"
+  }
+}
