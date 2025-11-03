@@ -1,99 +1,155 @@
 import express from "express";
 import dotenv from "dotenv";
 import twilio from "twilio";
+import fs from "fs";
+import path from "path";
 
 dotenv.config();
-
 const app = express();
 app.use(express.json());
 
-// Initialize Twilio client
 const client = twilio(process.env.TWILIO_SID, process.env.TWILIO_AUTH_TOKEN);
+const ordersFile = path.resolve("orders.json");
 
-// Home route (for quick check)
-app.get("/", (req, res) => {
-  res.send("✅ Local Shopify-Twilio backend is running");
-});
+// Helper to read & write order data
+const readOrders = () => JSON.parse(fs.readFileSync(ordersFile, "utf-8") || "{}");
+const writeOrders = (data) => fs.writeFileSync(ordersFile, JSON.stringify(data, null, 2));
 
-// Simple test route to send a manual SMS (use this first)
+// ✅ Test route
+app.get("/", (req, res) => res.send("✅ Real-time Shopify Tracking Backend Running"));
+
+// ✅ Send test SMS manually
 app.get("/test-message", async (req, res) => {
-  try {
-    const to = req.query.to; // optional: pass ?to=+91XXXXXXXXXX
-    if (!to) return res.status(400).send("Provide ?to=+91XXXXXXXXXX in URL for testing");
-
-    const message = await client.messages.create({
-      from: process.env.TWILIO_PHONE.replace(/\s+/g, ""), // remove spaces
-      to,
-      body: "Test SMS from your local Shopify-Twilio backend ✅"
-    });
-
-    console.log("✅ Test SMS sent, SID:", message.sid);
-    return res.send({ ok: true, sid: message.sid });
-  } catch (err) {
-    console.error("Error sending test SMS:", err);
-    return res.status(500).send({ ok: false, error: err.message });
-  }
+  const to = req.query.to;
+  if (!to) return res.status(400).send("Add ?to=+91XXXXXXXXXX");
+  const message = await client.messages.create({
+    from: process.env.TWILIO_PHONE,
+    to,
+    body: `Your order tracking link: ${process.env.BASE_URL}/track/test-order`,
+  });
+  res.send({ ok: true, sid: message.sid });
 });
 
-// Webhook: Order created (Shopify -> POST here)
+// 🧩 SHOPIFY WEBHOOKS
+
+// 🟢 1. Order Created
 app.post("/webhook/order-created", async (req, res) => {
   try {
-    const body = req.body;
-    console.log("➡️ /webhook/order-created received:", JSON.stringify(body, null, 2));
+    const order = req.body;
+    const id = order.id || order.name || `order-${Date.now()}`;
+    const phone = order?.customer?.phone;
+    const name = order?.customer?.first_name || "Customer";
 
-    const phone = body?.customer?.phone;
-    const name = body?.customer?.first_name || "Customer";
-    const orderId = body?.name || body?.id || "unknown";
+    if (!phone) return res.status(200).send("No phone found");
 
-    if (!phone) {
-      console.log("⚠️ No phone found on order - skipping SMS");
-      return res.status(200).send("No phone number on order");
-    }
+    // Save order status
+    const orders = readOrders();
+    orders[id] = { name, phone, status: "Confirmed" };
+    writeOrders(orders);
 
-    // Send SMS via Twilio
-    const msg = await client.messages.create({
-      from: process.env.TWILIO_PHONE.replace(/\s+/g, ""),
+    const trackingLink = `${process.env.BASE_URL}/track/${id}`;
+
+    await client.messages.create({
+      from: process.env.TWILIO_PHONE,
       to: phone,
-      body: `Hey ${name}, your order ${orderId} has been placed successfully!`
+      body: `Hey ${name}, your order ${id} is confirmed ✅\nTrack live: ${trackingLink}`,
     });
 
-    console.log(`📲 SMS sent to ${phone} (SID: ${msg.sid})`);
-    return res.status(200).send("SMS sent");
+    console.log(`📦 Order confirmed for ${phone}`);
+    res.send("Order confirmation sent");
   } catch (err) {
-    console.error("❌ Error in order-created webhook:", err);
-    return res.status(500).send("Server error");
+    console.error(err);
+    res.status(500).send("Error processing order");
   }
 });
 
-// Webhook: Order fulfilled (Shopify -> POST here)
-app.post("/webhook/order-fulfilled", async (req, res) => {
-  try {
-    const body = req.body;
-    console.log("➡️ /webhook/order-fulfilled received:", JSON.stringify(body, null, 2));
-
-    const order = body?.order || body; // Shopify may send fulfillment object or order directly
-    const phone = order?.customer?.phone;
-    const name = order?.customer?.first_name || "Customer";
-    const orderId = order?.name || order?.id || "unknown";
-
-    if (!phone) {
-      console.log("⚠️ No phone found on order - skipping delivery SMS");
-      return res.status(200).send("No phone number on order");
-    }
-
-    const msg = await client.messages.create({
-      from: process.env.TWILIO_PHONE.replace(/\s+/g, ""),
-      to: phone,
-      body: `Hi ${name}, your order ${orderId} has been delivered. Enjoy!`
-    });
-
-    console.log(`📲 Delivery SMS sent to ${phone} (SID: ${msg.sid})`);
-    return res.status(200).send("Delivery SMS sent");
-  } catch (err) {
-    console.error("❌ Error in order-fulfilled webhook:", err);
-    return res.status(500).send("Server error");
+// 🟠 2. Order Packed (custom webhook)
+app.post("/webhook/order-packed", (req, res) => {
+  const { order_id } = req.body;
+  const orders = readOrders();
+  if (orders[order_id]) {
+    orders[order_id].status = "Packed";
+    writeOrders(orders);
   }
+  res.send("Order marked as packed");
+});
+
+// 🔵 3. Order Shipped
+app.post("/webhook/order-shipped", (req, res) => {
+  const { order_id } = req.body;
+  const orders = readOrders();
+  if (orders[order_id]) {
+    orders[order_id].status = "Shipped";
+    writeOrders(orders);
+  }
+  res.send("Order marked as shipped");
+});
+
+// 🟣 4. Order Delivered
+app.post("/webhook/order-delivered", (req, res) => {
+  const { order_id } = req.body;
+  const orders = readOrders();
+  if (orders[order_id]) {
+    orders[order_id].status = "Delivered";
+    writeOrders(orders);
+  }
+  res.send("Order marked as delivered");
+});
+
+// 🧭 TRACKING PAGE (LIVE STATUS)
+app.get("/track/:id", (req, res) => {
+  const { id } = req.params;
+  const orders = readOrders();
+  const order = orders[id];
+
+  if (!order) {
+    return res.send(`<h2>No tracking info for order: ${id}</h2>`);
+  }
+
+  const stages = ["Confirmed", "Packed", "Shipped", "Delivered"];
+  const activeIndex = stages.indexOf(order.status);
+
+  const progressHTML = stages
+    .map((stage, i) => {
+      const done = i <= activeIndex ? "done" : "";
+      return `<div class="step ${done}">${stage}</div>`;
+    })
+    .join("");
+
+  res.send(`
+    <html>
+      <head>
+        <title>Tracking Order ${id}</title>
+        <style>
+          body { font-family: Poppins, sans-serif; background: #f4f4f9; text-align: center; padding: 40px; }
+          h1 { color: #0070f3; }
+          .track-container { display: flex; justify-content: center; gap: 25px; margin-top: 40px; }
+          .step {
+            position: relative;
+            padding: 15px 25px;
+            border-radius: 50px;
+            background: #ddd;
+            color: #555;
+            font-weight: bold;
+            transition: 0.3s;
+          }
+          .done {
+            background: #0070f3;
+            color: white;
+            box-shadow: 0 0 10px rgba(0,0,0,0.2);
+          }
+        </style>
+      </head>
+      <body>
+        <h1>📦 Order Tracking</h1>
+        <p>Customer: ${order.name}</p>
+        <p><strong>Order ID:</strong> ${id}</p>
+        <div class="track-container">${progressHTML}</div>
+        <p style="margin-top:40px;">Current Status: <b>${order.status}</b></p>
+      </body>
+    </html>
+  `);
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`🚀 Local server running on http://localhost:${PORT}`));
+app.listen(PORT, () => console.log(`🚀 Server running at http://localhost:${PORT}`));
