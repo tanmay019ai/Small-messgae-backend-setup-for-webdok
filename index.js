@@ -1,110 +1,139 @@
 import express from "express";
 import dotenv from "dotenv";
 import twilio from "twilio";
-import fs from "fs";
-import path from "path";
 
 dotenv.config();
 const app = express();
 app.use(express.json());
 
 const client = twilio(process.env.TWILIO_SID, process.env.TWILIO_AUTH_TOKEN);
-const ordersFile = path.resolve("orders.json");
 
-// Helper to read & write order data
-const readOrders = () => JSON.parse(fs.readFileSync(ordersFile, "utf-8") || "{}");
-const writeOrders = (data) => fs.writeFileSync(ordersFile, JSON.stringify(data, null, 2));
+// 🧠 In-memory storage (reset every deploy)
+let orders = {};
 
-// ✅ Test route
-app.get("/", (req, res) => res.send("✅ Real-time Shopify Tracking Backend Running"));
+// ✅ Root
+app.get("/", (req, res) => res.send("✅ Shopify + Twilio Real-time Tracking Backend Running"));
 
-// ✅ Send test SMS manually
+// ✅ Test SMS route
 app.get("/test-message", async (req, res) => {
-  const to = req.query.to;
-  if (!to) return res.status(400).send("Add ?to=+91XXXXXXXXXX");
-  const message = await client.messages.create({
-    from: process.env.TWILIO_PHONE,
-    to,
-    body: `Your order tracking link: ${process.env.BASE_URL}/track/test-order`,
-  });
-  res.send({ ok: true, sid: message.sid });
+  try {
+    const to = req.query.to;
+    if (!to) return res.status(400).send("Add ?to=+91XXXXXXXXXX");
+
+    const message = await client.messages.create({
+      from: process.env.TWILIO_PHONE,
+      to,
+      body: `Test order tracking link: ${process.env.BASE_URL}/track/test-order`,
+    });
+
+    res.send({ ok: true, sid: message.sid });
+  } catch (err) {
+    res.status(500).send({ error: err.message });
+  }
 });
 
-// 🧩 SHOPIFY WEBHOOKS
-
-// 🟢 1. Order Created
+// 🟢 Order Created
 app.post("/webhook/order-created", async (req, res) => {
   try {
     const order = req.body;
-    const id = order.id || order.name || `order-${Date.now()}`;
+    const id = order.id?.toString() || `order-${Date.now()}`;
     const phone = order?.customer?.phone;
     const name = order?.customer?.first_name || "Customer";
 
     if (!phone) return res.status(200).send("No phone found");
 
-    // Save order status
-    const orders = readOrders();
     orders[id] = { name, phone, status: "Confirmed" };
-    writeOrders(orders);
 
     const trackingLink = `${process.env.BASE_URL}/track/${id}`;
-
     await client.messages.create({
       from: process.env.TWILIO_PHONE,
       to: phone,
       body: `Hey ${name}, your order ${id} is confirmed ✅\nTrack live: ${trackingLink}`,
     });
 
-    console.log(`📦 Order confirmed for ${phone}`);
-    res.send("Order confirmation sent");
+    console.log(`✅ Order confirmed for ${phone}`);
+    res.send("Order confirmation processed");
   } catch (err) {
-    console.error(err);
+    console.error("❌ Order-created error:", err);
     res.status(500).send("Error processing order");
   }
 });
 
-// 🟠 2. Order Packed (custom webhook)
-app.post("/webhook/order-packed", (req, res) => {
-  const { order_id } = req.body;
-  const orders = readOrders();
-  if (orders[order_id]) {
+// 🟠 Packed
+app.post("/webhook/order-packed", async (req, res) => {
+  try {
+    const { order_id } = req.body;
+    if (!orders[order_id]) return res.send("Order not found");
+
     orders[order_id].status = "Packed";
-    writeOrders(orders);
+
+    const { name, phone } = orders[order_id];
+    await client.messages.create({
+      from: process.env.TWILIO_PHONE,
+      to: phone,
+      body: `Hey ${name}, your order ${order_id} has been packed 📦\nTrack: ${process.env.BASE_URL}/track/${order_id}`,
+    });
+
+    console.log(`📦 Order packed: ${order_id}`);
+    res.send("Order marked as packed");
+  } catch (err) {
+    console.error(err);
+    res.status(500).send("Error");
   }
-  res.send("Order marked as packed");
 });
 
-// 🔵 3. Order Shipped
-app.post("/webhook/order-shipped", (req, res) => {
-  const { order_id } = req.body;
-  const orders = readOrders();
-  if (orders[order_id]) {
+// 🔵 Shipped
+app.post("/webhook/order-shipped", async (req, res) => {
+  try {
+    const { order_id } = req.body;
+    if (!orders[order_id]) return res.send("Order not found");
+
     orders[order_id].status = "Shipped";
-    writeOrders(orders);
+
+    const { name, phone } = orders[order_id];
+    await client.messages.create({
+      from: process.env.TWILIO_PHONE,
+      to: phone,
+      body: `🚚 Hi ${name}, your order ${order_id} is now shipped!\nTrack: ${process.env.BASE_URL}/track/${order_id}`,
+    });
+
+    console.log(`🚚 Order shipped: ${order_id}`);
+    res.send("Order marked as shipped");
+  } catch (err) {
+    console.error(err);
+    res.status(500).send("Error");
   }
-  res.send("Order marked as shipped");
 });
 
-// 🟣 4. Order Delivered
-app.post("/webhook/order-delivered", (req, res) => {
-  const { order_id } = req.body;
-  const orders = readOrders();
-  if (orders[order_id]) {
+// 🟣 Delivered
+app.post("/webhook/order-delivered", async (req, res) => {
+  try {
+    const { order_id } = req.body;
+    if (!orders[order_id]) return res.send("Order not found");
+
     orders[order_id].status = "Delivered";
-    writeOrders(orders);
+
+    const { name, phone } = orders[order_id];
+    await client.messages.create({
+      from: process.env.TWILIO_PHONE,
+      to: phone,
+      body: `🎉 Hi ${name}, your order ${order_id} has been delivered!\nThank you for shopping with us ❤️`,
+    });
+
+    console.log(`🎉 Order delivered: ${order_id}`);
+    res.send("Order marked as delivered");
+  } catch (err) {
+    console.error(err);
+    res.status(500).send("Error");
   }
-  res.send("Order marked as delivered");
 });
 
-// 🧭 TRACKING PAGE (LIVE STATUS)
+// 🧭 Tracking page (simple HTML)
 app.get("/track/:id", (req, res) => {
   const { id } = req.params;
-  const orders = readOrders();
   const order = orders[id];
 
-  if (!order) {
-    return res.send(`<h2>No tracking info for order: ${id}</h2>`);
-  }
+  if (!order) return res.send(`<h2>No tracking info found for Order ID: ${id}</h2>`);
 
   const stages = ["Confirmed", "Packed", "Shipped", "Delivered"];
   const activeIndex = stages.indexOf(order.status);
@@ -119,37 +148,37 @@ app.get("/track/:id", (req, res) => {
   res.send(`
     <html>
       <head>
-        <title>Tracking Order ${id}</title>
+        <title>Order Tracking - ${id}</title>
         <style>
-          body { font-family: Poppins, sans-serif; background: #f4f4f9; text-align: center; padding: 40px; }
+          body { font-family: Poppins, sans-serif; background: #f8f9fb; text-align: center; padding: 40px; }
           h1 { color: #0070f3; }
           .track-container { display: flex; justify-content: center; gap: 25px; margin-top: 40px; }
           .step {
-            position: relative;
             padding: 15px 25px;
             border-radius: 50px;
             background: #ddd;
             color: #555;
-            font-weight: bold;
+            font-weight: 600;
             transition: 0.3s;
           }
           .done {
             background: #0070f3;
             color: white;
-            box-shadow: 0 0 10px rgba(0,0,0,0.2);
+            box-shadow: 0 4px 10px rgba(0,0,0,0.2);
           }
         </style>
       </head>
       <body>
         <h1>📦 Order Tracking</h1>
-        <p>Customer: ${order.name}</p>
-        <p><strong>Order ID:</strong> ${id}</p>
+        <p>Customer: <b>${order.name}</b></p>
+        <p>Order ID: <b>${id}</b></p>
         <div class="track-container">${progressHTML}</div>
-        <p style="margin-top:40px;">Current Status: <b>${order.status}</b></p>
+        <p style="margin-top:30px;">Current Status: <b>${order.status}</b></p>
       </body>
     </html>
   `);
 });
 
+// 🚀 Server start
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`🚀 Server running at http://localhost:${PORT}`));
